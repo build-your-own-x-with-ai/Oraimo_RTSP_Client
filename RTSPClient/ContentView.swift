@@ -90,15 +90,6 @@ struct ContentView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            if player.mediaInfo?.audioCodec != nil {
-                Button {
-                    player.isMuted.toggle()
-                } label: {
-                    Image(systemName: player.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                }
-                .buttonStyle(.plain)
-                .help(player.isMuted ? "取消静音" : "静音")
-            }
         }
     }
 

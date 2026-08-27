@@ -40,11 +40,7 @@ final class RTSPPlayer {
     /// 认证失败时置位，UI 弹出账号密码输入。
     var needsCredentials = false
     private(set) var reconnectAttempt = 0
-    var isMuted = false {
-        didSet { renderer.setMuted(isMuted) }
-    }
-
-    let renderer = MediaRenderer(enableAudio: true)
+    let renderer = MediaRenderer()
     private let history: StreamHistoryStore
     private var session: RTSPSession?
     private var currentURL: RTSPURL?
@@ -113,8 +109,6 @@ final class RTSPPlayer {
         stopInternal(userInitiated: true)
         state = .idle
         statistics = nil
-        // 交还音频会话，别一直占着别的 App 的播放权。
-        AudioSessionSupport.deactivate()
     }
 
     func pause() {
@@ -150,9 +144,7 @@ final class RTSPPlayer {
 
     private func startSession(url: RTSPURL) {
         state = .connecting
-        // iOS 上不激活音频会话就没有声音。
-        AudioSessionSupport.activate()
-        let session = RTSPSession(url: url, wantsAudio: true,
+        let session = RTSPSession(url: url,
                                   transport: forcedInterleaved ? .interleaved : .udp) {
             [weak self] event in
             // 网络队列上触发，需要主线程的部分自己切。
@@ -167,7 +159,6 @@ final class RTSPPlayer {
                 self.state = .playing
             }
         }
-        renderer.setMuted(isMuted)
         session.start()
     }
 
@@ -187,8 +178,6 @@ final class RTSPPlayer {
         switch event {
         case .video(let box):
             renderer.enqueueVideo(box.buffer)
-        case .audio(let box):
-            renderer.enqueueAudio(box.buffer)
         case .formatChanged:
             renderer.flushForFormatChange()
         case .stage(let stage):
@@ -314,7 +303,6 @@ final class RTSPPlayer {
         var parts: [String] = []
         if let codec = mediaInfo.videoCodec { parts.append(codec) }
         if mediaInfo.width > 0 { parts.append("\(mediaInfo.width)×\(mediaInfo.height)") }
-        if let audio = mediaInfo.audioCodec { parts.append(audio) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }

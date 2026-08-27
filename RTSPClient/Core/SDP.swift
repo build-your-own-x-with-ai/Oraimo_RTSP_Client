@@ -34,11 +34,12 @@ nonisolated struct SDPSession: Sendable, Equatable {
 
     var video: SDPMedia? { media.first { $0.isVideo && $0.clockRate > 0 } }
 
-    /// 优先挑我们能解的音频轨。
-    var audio: SDPMedia? {
-        let supported = ["MPEG4-GENERIC", "PCMU", "PCMA", "L16"]
-        return media.first { $0.isAudio && supported.contains($0.codec) }
-    }
+    /// 任意一条音频轨，不管编码是什么。
+    ///
+    /// 音频不播，这个只用来取负载类型，把混进视频通道的音频包挡掉。
+    /// 所以不能按「我们能解的编码」筛：遇到不认识的音频编码时，
+    /// 那一路照样得挡，否则它的包会被当成视频解。
+    var anyAudio: SDPMedia? { media.first { $0.isAudio && $0.payloadType >= 0 } }
 
     static func parse(_ data: Data) throws -> SDPSession {
         let text = String(decoding: data, as: UTF8.self)

@@ -2,7 +2,7 @@
 //  SampleBufferFactory.swift
 //  RTSPClient
 //
-//  AVCC 访问单元 / 音频帧 -> CMSampleBuffer。
+//  AVCC 访问单元 -> CMSampleBuffer。
 //
 
 import Foundation
@@ -40,32 +40,6 @@ nonisolated enum SampleBufferFactory {
         guard status == noErr, let buffer else { return nil }
         if !unit.isKeyframe { markNotSync(buffer) }
         return buffer
-    }
-
-    /// 音频：AAC 一帧一个 sample；G.711 一个包含多个定长 sample。
-    static func audio(_ data: Data,
-                      format: CMFormatDescription,
-                      pts: CMTime,
-                      sampleCount: Int,
-                      bytesPerSample: Int,
-                      duration: CMTime) -> CMSampleBuffer? {
-        guard sampleCount > 0, let block = blockBuffer(data) else { return nil }
-        var timing = CMSampleTimingInfo(duration: duration,
-                                        presentationTimeStamp: pts,
-                                        decodeTimeStamp: .invalid)
-        var size = bytesPerSample
-        var buffer: CMSampleBuffer?
-        let status = CMSampleBufferCreateReady(
-            allocator: kCFAllocatorDefault,
-            dataBuffer: block,
-            formatDescription: format,
-            sampleCount: sampleCount,
-            sampleTimingEntryCount: 1,
-            sampleTimingArray: &timing,
-            sampleSizeEntryCount: 1,
-            sampleSizeArray: &size,
-            sampleBufferOut: &buffer)
-        return status == noErr ? buffer : nil
     }
 
     private static func blockBuffer(_ data: Data) -> CMBlockBuffer? {

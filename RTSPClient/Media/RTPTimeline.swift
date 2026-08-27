@@ -2,8 +2,11 @@
 //  RTPTimeline.swift
 //  RTSPClient
 //
-//  32 位 RTP 时间戳会回绕，而且音视频起点不同。
-//  这里把它展开成单调递增值，再折算成统一时间轴上的 CMTime。
+//  32 位 RTP 时间戳会回绕。
+//  这里把它展开成单调递增值，再折算成播放时间轴上的 CMTime。
+//
+//  只按整包推进。以前还有个 advanced(_:frames:samplesPerFrame:) 用于
+//  AAC 一个 RTP 包带多帧时在包内细分，音频移除后没有调用方，已删。
 //
 
 import Foundation
@@ -20,7 +23,7 @@ nonisolated struct RTPTimeline {
         self.clockRate = Int32(clockRate > 0 ? clockRate : 90000)
     }
 
-    /// RTP-Info 带了 rtptime 时预置原点，让音视频对齐同一个零点。
+    /// RTP-Info 带了 rtptime 时预置原点。
     mutating func setOrigin(_ timestamp: UInt32) {
         origin = UInt64(timestamp)
         lastRaw = timestamp
@@ -57,10 +60,4 @@ nonisolated struct RTPTimeline {
         return CMTime(value: CMTimeValue(delta), timescale: clockRate)
     }
 
-    /// 在包内按帧推进（AAC 一个包可能带多帧）。
-    func advanced(_ time: CMTime, frames: Int, samplesPerFrame: Int) -> CMTime {
-        guard frames > 0, samplesPerFrame > 0 else { return time }
-        let offset = CMTime(value: CMTimeValue(frames * samplesPerFrame), timescale: clockRate)
-        return CMTimeAdd(time, offset)
-    }
 }

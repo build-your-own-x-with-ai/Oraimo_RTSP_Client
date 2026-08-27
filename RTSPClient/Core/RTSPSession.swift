@@ -2,9 +2,12 @@
 //  RTSPSession.swift
 //  RTSPClient
 //
-//  握手流程：OPTIONS -> DESCRIBE -> SETUP(视频) -> SETUP(音频) -> PLAY，
+//  握手流程：OPTIONS -> DESCRIBE -> SETUP -> PLAY，
 //  之后按 Session 的 timeout 定时发保活请求。
 //  所有状态都只在 connection.queue 上访问。
+//
+//  只收视频。SDP 里的音频轨不 SETUP，但它声明的负载类型要留着 ——
+//  见 audioPayloadType。
 //
 
 import Foundation
@@ -13,7 +16,6 @@ import CoreMedia
 nonisolated final class RTSPSession: @unchecked Sendable {
     struct MediaInfo: Sendable, Equatable {
         var videoCodec: String?
-        var audioCodec: String?
         var width: Int32 = 0
         var height: Int32 = 0
         var sessionName: String = ""
@@ -31,9 +33,6 @@ nonisolated final class RTSPSession: @unchecked Sendable {
         case connecting, describing, settingUp, playing, stopped
     }
 
-    /// 哪一条轨。SETUP 流程必须显式带着它走，不能靠通道号反推。
-    enum Track: Sendable, Equatable { case video, audio }
-
     /// RTP 走哪条路。
     ///
     /// 默认先试 UDP：抓包对比过 VLC，摄像机那边压根没有 TCP 交织这条路，
@@ -46,7 +45,6 @@ nonisolated final class RTSPSession: @unchecked Sendable {
         case stage(Stage)
         case info(MediaInfo)
         case video(SampleBox)
-        case audio(SampleBox)
         case formatChanged
         case statistics(Statistics)
         case failed(RTSPError)
@@ -55,7 +53,6 @@ nonisolated final class RTSPSession: @unchecked Sendable {
     // 下面这些状态跨文件的 extension（握手、收流）要访问，所以是 internal 而非
     // private。约束不变：只在 connection.queue 上读写。
     let url: RTSPURL
-    let wantsAudio: Bool
     let connection: RTSPConnection
     let events: (Event) -> Void
     var authenticator: RTSPAuthenticator?
@@ -65,14 +62,12 @@ nonisolated final class RTSPSession: @unchecked Sendable {
     var stage: Stage = .connecting
     var isStopped = false
 
-    /// interleaved 通道号：视频 0/1，音频 2/3。
+    /// interleaved 通道号：RTP 0，RTCP 1。
     var videoChannel = 0
-    var audioChannel = 2
 
     /// 当前传输方式，SETUP 期间可能被服务器的应答改掉。
     var transportMode: TransportMode
     var videoUDP: RTPUDPTransport?
-    var audioUDP: RTPUDPTransport?
     /// PLAY 之后守着第一个 RTP 包；UDP 收不到就换交织重来。
     var firstMediaWatchdog: DispatchSourceTimer?
     var didReceiveMedia = false
@@ -80,15 +75,26 @@ nonisolated final class RTSPSession: @unchecked Sendable {
     /// 3 秒足够；真被防火墙挡了也不用让用户等满 12 秒的首帧超时。
     static let udpFirstMediaTimeout: TimeInterval = 3
 
-    /// SDP 声明的负载类型。两条轨被塞进同一个通道时靠它把数据分开；
-    /// 即使音频轨后来被丢掉，这个值也要留着，用来把音频包挡在视频解包器外面。
+    /// SDP 声明的视频负载类型。
     var videoPayloadType = -1
+    /// SDP 声明的音频负载类型。音频不播，但这个值必须留着。
+    ///
+    /// 有固件不管客户端 SETUP 了什么，照样把音频往视频那一路发。不按负载类型
+    /// 把它挡在视频解包器外面，后果分两种，都实测过（同一段字节流，
+    /// 只把这道保护关掉作对照）：
+    ///
+    /// - PCMA：裸样本字节被当成 H.264 NAL 解，凭空造出假帧。
+    ///   126 帧 / 6 关键帧 / 0 乱序 → 151 帧 / 12 关键帧 / 22 乱序。
+    /// - AAC：负载头两字节是 00 10，NAL type 0 是 unspecified，解包器直接丢，
+    ///   所以帧数不变；但音频的 RTP 序号会污染丢包统计，
+    ///   丢包 0 → 823，界面上会显示一条完好的流「丢包 823」。
+    ///
+    /// 所以这不是音频功能，是画面和统计的正确性保障。
+    /// 复现：matrix.sh 里的 mismux_pcma / ctl_pcma / mismux_tcp / ctl_aac。
     var audioPayloadType = -1
 
     var videoMedia: SDPMedia?
-    var audioMedia: SDPMedia?
     var videoDepacketizer: VideoDepacketizer?
-    var audioDepacketizer: AudioDepacketizer?
     var clock: MediaClock?
     var info = MediaInfo()
 
@@ -105,10 +111,9 @@ nonisolated final class RTSPSession: @unchecked Sendable {
     var statsWindowStart = CFAbsoluteTimeGetCurrent()
     var videoLoss = RTPLossCounter()
 
-    init(url: RTSPURL, wantsAudio: Bool, transport: TransportMode = .udp,
+    init(url: RTSPURL, transport: TransportMode = .udp,
          events: @escaping (Event) -> Void) {
         self.url = url
-        self.wantsAudio = wantsAudio
         self.transportMode = transport
         self.events = events
         self.connection = RTSPConnection(host: url.host, port: url.port, usesTLS: url.usesTLS)
@@ -179,7 +184,6 @@ nonisolated final class RTSPSession: @unchecked Sendable {
     /// 不 cancel 就一直挂着。
     func closeUDP() {
         videoUDP?.close(); videoUDP = nil
-        audioUDP?.close(); audioUDP = nil
     }
 
     func setStage(_ new: Stage) {

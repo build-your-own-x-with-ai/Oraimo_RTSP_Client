@@ -28,40 +28,28 @@ nonisolated extension RTSPSession {
             // 各轨的 RTCP 固定在 RTP 通道 +1，暂不解析。
             if channel == videoChannel {
                 guard let packet = RTPPacket(payload) else { return }
-                // 有固件把两条轨回成同一个通道，音频包会跟着进来。
-                // 按负载类型挡掉，否则 PCMA 数据会被当成 H.264 NAL 解，
-                // 凭空造出一堆假帧（实测 150 帧的流能多出 32 帧）。
+                // 有固件把音频也发到视频通道上。按负载类型挡掉，否则 PCMA
+                // 数据会被当成 H.264 NAL 解，凭空造出一堆假帧
+                //（实测 150 帧的流能多出 32 帧）。
                 guard !isForeignPayload(packet.payloadType, expected: videoPayloadType,
                                         other: audioPayloadType) else { return }
                 handleVideo(packet)
-            } else if channel == audioChannel {
-                guard let packet = RTPPacket(payload) else { return }
-                guard !isForeignPayload(packet.payloadType, expected: audioPayloadType,
-                                        other: videoPayloadType) else { return }
-                handleAudio(packet)
             }
         }
     }
 
-    /// UDP 上收到的一个数据报。每条轨自己一个端口，不需要通道号分流，
-    /// 但负载类型的过滤照旧留着 —— 有固件会把两条轨都往同一个端口发。
-    func handleUDP(_ datagram: Data, track: Track) {
+    /// UDP 上收到的一个数据报。负载类型的过滤照旧留着 ——
+    /// 有固件会把音频也往这个端口发。
+    func handleUDP(_ datagram: Data) {
         guard !isStopped else { return }
         statsWindowBytes += datagram.count
         stats.bytesReceived += datagram.count
         noteMediaArrived()
 
         guard let packet = RTPPacket(datagram) else { return }
-        switch track {
-        case .video:
-            guard !isForeignPayload(packet.payloadType, expected: videoPayloadType,
-                                    other: audioPayloadType) else { return }
-            handleVideo(packet)
-        case .audio:
-            guard !isForeignPayload(packet.payloadType, expected: audioPayloadType,
-                                    other: videoPayloadType) else { return }
-            handleAudio(packet)
-        }
+        guard !isForeignPayload(packet.payloadType, expected: videoPayloadType,
+                                other: audioPayloadType) else { return }
+        handleVideo(packet)
     }
 
     /// 媒体数据到了，撤掉起播看门狗。
@@ -143,40 +131,6 @@ nonisolated extension RTSPSession {
             stats.videoFrames += 1
             statsWindowFrames += 1
             events(.video(SampleBox(buffer)))
-        }
-    }
-
-    // MARK: - 音频
-
-    private func handleAudio(_ packet: RTPPacket) {
-        guard let depacketizer = audioDepacketizer,
-              let format = depacketizer.formatDescription,
-              let clock else { return }
-
-        for frame in depacketizer.process(packet) {
-            let pts = clock.audioTime(packet.timestamp,
-                                      frameOffset: frame.frameOffset,
-                                      samplesPerFrame: depacketizer.samplesPerFrame)
-            let sampleCount: Int
-            let bytesPerSample: Int
-            let duration: CMTime
-            if depacketizer.isCompressed {
-                // AAC：整帧一个 sample，时长为一帧的样本数。
-                sampleCount = 1
-                bytesPerSample = frame.data.count
-                duration = CMTime(value: CMTimeValue(depacketizer.samplesPerFrame),
-                                  timescale: Int32(depacketizer.clockRate))
-            } else {
-                bytesPerSample = depacketizer.bytesPerSample
-                sampleCount = max(1, frame.data.count / max(1, bytesPerSample))
-                duration = CMTime(value: 1, timescale: Int32(depacketizer.clockRate))
-            }
-            guard let buffer = SampleBufferFactory.audio(frame.data, format: format, pts: pts,
-                                                         sampleCount: sampleCount,
-                                                         bytesPerSample: bytesPerSample,
-                                                         duration: duration)
-            else { continue }
-            events(.audio(SampleBox(buffer)))
         }
     }
 
