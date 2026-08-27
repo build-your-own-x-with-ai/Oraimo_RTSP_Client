@@ -88,3 +88,28 @@ Tests/docs.sh       # 校验文档里的 Mermaid 图
 
 场景清单、基线数字、怎么重新采集抓包,看 [Tests/README.md](Tests/README.md)。
 
+### 抓包
+
+`Oraimo.pcap` 是 VLC 连那台真实摄像机时录的完整网络抓包,排查「连上了但
+没画面」时用的。它是传输协商那套逻辑的依据 —— 摄像机只认
+`RTP/AVP;unicast;client_port=...`,SETUP 里给交织请求换不来一个字节。
+
+`Tests/Fixtures/oraimo_video.rtp` 就是从这份 pcap 里抽出来的视频 RTP 流,
+换成测试服务器回放用的格式(4 字节大端长度 + 包体)。逐包比对过,480 个
+包的 seq、时间戳、载荷全等。
+
+两者的差别只在于 pcap 还留着 RTSP 握手和 SDP,fixture 只有 RTP。所以传输层
+和信令层的疑问要翻 pcap,解包和渲染的疑问用 fixture 就够。
+
+```sh
+# tshark 在 Wireshark.app 里,/usr/bin/tshark 已经没有了
+"/Applications/Wireshark.app/Contents/MacOS/tshark" -r Oraimo.pcap -Y rtsp
+```
+
+内容:UDP 传输,480 个 RTP 包 / 91 帧 / 3.6 秒。SDP 里
+`profile-level-id=42001e`,码流内 SPS 一致,都是 Baseline —— 逐片解出
+I×4 + P×87,没有 B 帧,RTP 时间戳零回退。所以这条流不乱序,预缓冲实际是在
+吸收到达抖动:去掉时钟漂移后收齐时刻跨度 93.8ms,最大包间隔 127.4ms。
+
+其余 fixture 是 ffmpeg 生成的,采集脚本在 `Tests/Fixtures/Capture/`。
+
