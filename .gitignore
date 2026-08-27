@@ -12,7 +12,9 @@ DerivedData/
 *.ipa
 *.dSYM.zip
 
-# Swift Package Manager
+# Swift Package Manager，以及 Tests/.build/ 里的测试驱动二进制、
+# 服务器日志、对照实验的补丁副本 —— 全是可重新生成的产物。
+# 无前导斜杠的模式在任意层级匹配，所以这一行同时管住两处。
 .build/
 .swiftpm/
 
