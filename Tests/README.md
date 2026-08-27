@@ -22,6 +22,7 @@ Tests/unit.sh       # 单元测试，期望 187/187
 Tests/matrix.sh     # 22 个会话层场景，一张表
 Tests/player.sh     # 3 个播放器层场景，三条恢复路径
 Tests/latency.sh    # 延迟 A/B，和改动前的 250ms 预缓冲对照
+Tests/docs.sh       # 文档里的 Mermaid 图能不能渲染（不用先 build.sh）
 ```
 
 从仓库任何目录敲都行，脚本自己定位。
@@ -37,6 +38,7 @@ Tests/latency.sh    # 延迟 A/B，和改动前的 250ms 预缓冲对照
 | `LatencyDriver/` | 延迟测量，不需要服务器 |
 | `Fixtures/` | 抓包、SDP、逐帧尺寸的 ground truth |
 | `Fixtures/Capture/` | 重新采集抓包的脚本（需要 ffmpeg） |
+| `MermaidCheck/` | 校验文档里的 Mermaid 图，用 VS Code 自带那份解析器 |
 
 `Tests/.build/` 是产物（二进制、服务器日志、对照实验的补丁副本），已被
 `.gitignore` 管住 —— 无前导斜杠的模式在任意层级匹配。
@@ -161,6 +163,36 @@ cd Tests/Fixtures && python3 Capture/capture_pcma.py # PCMA
 
 **ffmpeg 8.1 的 `-rtsp_flags listen` 不能当服务器用**，它仍然向外拨号，
 直接报 Connection refused。这就是服务器得自己写的原因。
+
+## 文档里的图
+
+`docs.sh` 把仓库里所有 markdown 的 Mermaid 块喂给真正的解析器过一遍。
+起因是交互图提交出去之后 VS Code 预览直接报解析错误：**分号在 Mermaid 里是
+语句分隔符**，写进消息文本就把语句截断了，解析器把后半截当成新的参与者名，
+找不到箭头就报到 NEWLINE。这类错误肉眼扫不出来。
+
+用的是 VS Code 自带那份 mermaid（`markdown-language-features` 里的
+`mermaid.core-*.js`），不是 npm 装的。理由是报错的就是它 —— 编辑器预览失败时
+抛的那串 token 列表，和这里抛的逐字一致，所以它说过就是真的能渲染。
+npm 上的版本可能新可能旧，过了不代表编辑器里能过；而且这个项目不引第三方依赖。
+
+隔离过两个隐患各自的影响：
+
+| 写法 | parse | 说明 |
+| --- | --- | --- |
+| `RTP/AVP;unicast;client_port=` | ✗ | 分号截断语句，这是真凶 |
+| `SETUP <control>` | ✓ | 语法上没问题，但渲染时会被当未知 HTML 标签消掉 |
+
+所以精确的头部原文放在图后面的代码块里，图里只写叙述。代码块不参与
+Mermaid 解析，信息不丢。
+
+**这项检查只做 parse，不做 render。** 渲染要真实 DOM 去量文字宽度，在 node
+里立不起来；而且为了绕开无 DOM 环境，校验器把 bundle 副本里的 `sanitize`
+短路成了 `String` —— 正好把消毒环节跳过了。上面表格第二行那种渲染期问题，
+这里查不出来，得靠预览确认。
+
+找不到 VS Code 或找不到 node ≥ 18 时脚本报「跳过」并退 0。
+**跳过不等于通过** —— 这台机器上没法验，和验过了是两件事。
 
 ## 踩过的坑
 

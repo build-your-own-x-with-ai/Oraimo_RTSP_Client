@@ -84,12 +84,12 @@ sequenceDiagram
 
     Note over S: consumeSDP()<br/>取 video 轨的 control / rtpmap /<br/>fmtp 里的 SPS·PPS(VPS)<br/>audioPayloadType 只用来过滤
 
-    S->>CAM: SETUP <control> · Transport: RTP/AVP;unicast;client_port=n-n+1
-    CAM-->>S: 200 OK · Session=… ;timeout=60 · Transport: …
+    S->>CAM: SETUP 视频轨的 control URL<br/>Transport 请求 UDP 端口对
+    CAM-->>S: 200 OK · Session 与 timeout · Transport 实际取值
     Note over S: applyTransport()<br/>看有没有 interleaved 参数，<br/>没有就按 UDP 处理（RFC 2326）
 
     S->>CAM: PLAY · Range: npt=0.000-
-    CAM-->>S: 200 OK · RTP-Info: url=…;seq=…;rtptime=…
+    CAM-->>S: 200 OK · RTP-Info 带 seq 与 rtptime
     Note over S: parseRTPInfo() 取 rtptime 当时间原点<br/>stage = .playing
 
     par 媒体流
@@ -106,6 +106,21 @@ sequenceDiagram
     P->>S: stop()
     S->>CAM: TEARDOWN
     Note over S: 不等回应，0.15 秒后直接关连接
+```
+
+图里的头部写成了叙述，因为 Mermaid 会把 `;` 当语句分隔符。实际收发的原文是
+这样（`SETUP` 的 URL 取自 SDP 里 video 轨的 `a=control:`）：
+
+```http
+SETUP rtsp://192.168.0.1/livestream/1/trackID=0 RTSP/1.0
+Transport: RTP/AVP;unicast;client_port=5000-5001
+
+RTSP/1.0 200 OK
+Session: 12345678;timeout=60
+Transport: RTP/AVP;unicast;client_port=5000-5001
+
+RTSP/1.0 200 OK
+RTP-Info: url=rtsp://192.168.0.1/livestream/1/trackID=0;seq=8123;rtptime=3092385
 ```
 
 ## 二、传输协商：先 UDP，再退 TCP
