@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Xcode 用户态：窗口布局、断点、scheme 排序，都是本机数据，
+# 跟着提交只会在多人协作时反复冲突。
+xcuserdata/
+*.xcuserstate
+
+# 构建产物
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# 签名与密钥
+*.p12
+*.cer
+*.mobileprovision
