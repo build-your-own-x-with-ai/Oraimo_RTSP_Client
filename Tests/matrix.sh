@@ -34,6 +34,10 @@ SCENARIOS=(
   "noidr~从不发关键帧~--no-idr~~"
   "nodata~答应了却不推流~--no-data~~不发任何媒体数据"
   "oraimo~Oraimo 真实回放~--oraimo --udp~~SETUP trackID=0: UDP"
+  # 记录仪：Content-Base 的路径和请求 URL 不同（还不带端口），
+  # 客户端必须按它拼 control。拼错服务器回 404，见下面的对照行。
+  "dashcam~记录仪真实回放（UDP）~--dashcam --udp~~Content-Base="
+  "dashcam_tcp~记录仪真实回放（交织）~--dashcam~~Content-Base="
   "mismux_tcp~音频串进视频通道（交织）~--mismux~~mismux"
   "mismux_udp~音频串进视频端口（UDP）~--udp --mismux~~mismux"
   "mismux_pcma~PCMA 串进视频通道~--pcma --mismux~~mismux"
@@ -42,6 +46,10 @@ SCENARIOS=(
   # 通过不是「本来就没事」，而是保护真的挡住了。这两行预期就是坏的。
   "ctl_aac~对照：AAC 串轨且保护失效~--mismux --hide-audio-sdp~~mismux"
   "ctl_pcma~对照：PCMA 串轨且保护失效~--pcma --mismux --hide-audio-sdp~~mismux"
+  # 对照实验：记录仪模式下扣掉 Content-Base，别的一个字不动。
+  # 客户端只剩请求 URL 可用，于是拼出 /livestream/1/track1，服务器回 404。
+  # **这一行必须报错** —— 它通过说明上面两行压根没在验基址。
+  "ctl_nobase~对照：记录仪缺 Content-Base~--dashcam --udp --no-content-base~~对照组"
 )
 
 LOGS=$HERE/.build/mlogs

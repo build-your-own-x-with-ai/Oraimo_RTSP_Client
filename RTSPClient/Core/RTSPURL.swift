@@ -110,18 +110,40 @@ nonisolated struct RTSPURL: Equatable, Hashable, Sendable {
     }
 
     /// 追加子路径，用于 SETUP 时拼接 SDP 里的相对 control 值。
+    ///
+    /// 只在没有 Content-Base 的设备上等价于正确答案。有那个头的时候必须用
+    /// `resolveControl(_:base:)` —— 见它的注释。
     func appendingControl(_ control: String) -> String {
-        if control.isEmpty || control == "*" { return requestURI }
-        if control.lowercased().hasPrefix("rtsp://") || control.lowercased().hasPrefix("rtsps://") {
-            return control
-        }
-        var base = requestURI
-        if base.hasSuffix("/") { base.removeLast() }
-        return control.hasPrefix("/") ? base + control : base + "/" + control
+        Self.resolveControl(control, base: requestURI)
+    }
+
+    /// 把 SDP 里的 control 值解析成绝对 URI。
+    ///
+    /// base 是 DESCRIBE 应答定下的基址，不一定等于请求 URL。那台记录仪
+    /// （LIVE555）用 `/xxx.mov` 收 DESCRIBE，却在 Content-Base 里给
+    /// `rtsp://192.168.1.254/00000000/`，media 的 control 是相对的 `track1`。
+    /// 按请求 URL 拼会得到 `/xxx.mov/track1`，SETUP 过不去。
+    ///
+    /// 拼接用的是「基址后面接一段」，不是 RFC 3986 那套「替换最后一段」。
+    /// RTSP 服务器（含 LIVE555 自己）实际就是这么拼的，抓包里 VLC 发的也是
+    /// 这个形态。按 3986 严格解析反而对不上。
+    static func resolveControl(_ control: String, base: String) -> String {
+        // `*` 是聚合控制，指基址本身。空值同样落回基址。
+        if control.isEmpty || control == "*" { return base }
+        if control.isAbsoluteRTSP { return control }
+        var b = base
+        if b.hasSuffix("/") { b.removeLast() }
+        return control.hasPrefix("/") ? b + control : b + "/" + control
     }
 }
 
 nonisolated extension String {
+    /// 是不是一个绝对的 rtsp / rtsps URI。
+    var isAbsoluteRTSP: Bool {
+        let s = lowercased()
+        return s.hasPrefix("rtsp://") || s.hasPrefix("rtsps://")
+    }
+
     /// 凭据里的 %XX 需要还原，但非法转义时保留原文而不是丢掉整串。
     var removingRTSPPercentEncoding: String {
         contains("%") ? (removingPercentEncoding ?? self) : self

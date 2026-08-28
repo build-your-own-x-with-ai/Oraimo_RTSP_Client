@@ -18,6 +18,10 @@ DerivedData/
 .build/
 .swiftpm/
 
+# Python 字节码。server.py 被当模块导入时就会生成（抽取脚本、场景脚本都会）。
+__pycache__/
+*.pyc
+
 # 签名与密钥
 *.p12
 *.cer

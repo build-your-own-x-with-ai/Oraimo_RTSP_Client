@@ -84,6 +84,21 @@ nonisolated struct RTSPResponse: Sendable {
 
     var contentLength: Int { value("Content-Length").flatMap { Int($0) } ?? 0 }
 
+    /// DESCRIBE 应答里声明的基址，SDP 里的相对 control 要按它解析。
+    ///
+    /// 这个头不是可选的装饰：那台记录仪（LIVE555）用 `/xxx.mov` 接受
+    /// DESCRIBE，却在 Content-Base 里给出 `rtsp://192.168.1.254/00000000/`，
+    /// control 是相对的 `track1`。按请求 URL 去拼会得到
+    /// `/xxx.mov/track1`，SETUP 直接失败 —— VLC 发的是 `/00000000/track1`。
+    var contentBase: String? {
+        value("Content-Base")?.trimmed.nilIfEmpty
+    }
+
+    /// Content-Base 缺席时的次选，语义相同。RFC 2326 里两个都算基址。
+    var contentLocation: String? {
+        value("Content-Location")?.trimmed.nilIfEmpty
+    }
+
     /// 头部齐了但 body 可能还没到，所以解析分两步走。
     static func parseHead(_ buffer: Data) -> (response: RTSPResponse, headLength: Int)? {
         guard let parsed = RTSPHead.parse(buffer),

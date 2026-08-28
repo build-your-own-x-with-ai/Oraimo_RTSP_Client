@@ -76,6 +76,28 @@ UDP_MODE = "--udp" in sys.argv
 # 关键帧是 FU-A 拼出来的单个 NAL，头上标着 type 7，里面其实是
 # SPS + PPS + SEI + IDR 用 00 00 00 01 粘在一起。
 ORAIMO = "--oraimo" in sys.argv
+# --dashcam：回放那台行车记录仪（LIVE555）的真实 RTP，连它的 SDP 一起。
+#
+# 这个开关的要点不是流，是**基址**。真机用 /xxx.mov 收 DESCRIBE，应答里的
+# Content-Base 却是另一条路径、而且不带端口。所以这里故意让三者都不一样：
+#   请求 URL   rtsp://127.0.0.1:8554/livestream/1/
+#   Content-Base rtsp://127.0.0.1/00000000/      ← 路径不同，端口也没了
+#   media control track1                          ← 相对值
+# 客户端必须发 SETUP rtsp://127.0.0.1/00000000/track1。按请求 URL 去拼会
+# 得到 /livestream/1/track1，下面直接回 404 —— 不修 Content-Base 这行必挂。
+#
+# 基址不带端口是安全的：连接在 DESCRIBE 之前就建好了，Request-URI 只是
+# 一个字符串，客户端不会照它重新拨号。真要有人改成重新拨号，这一行会以
+# 连不上 127.0.0.1:554 的形式当场暴露，正是想要的。
+DASHCAM = "--dashcam" in sys.argv
+DASHCAM_BASE = "rtsp://127.0.0.1/00000000/"
+DASHCAM_PATH = "/00000000/"
+# --no-content-base：记录仪模式下把 Content-Base 那一行扣掉，别的一个字不动。
+#
+# --dashcam 的对照实验。客户端只能从这个头得知真正的基址；扣掉之后它只剩
+# 请求 URL 可用，于是拼出 /livestream/1/track1，服务器 404。
+# **这一行报错才是对的** —— 它通过说明 --dashcam 压根没在验基址。
+NO_CONTENT_BASE = "--no-content-base" in sys.argv
 # --udp-blackhole：UDP 的 SETUP 照样回 200，但一个 UDP 包都不发；
 # 客户端改用交织重来时才真的推流。模拟 UDP 被防火墙吞掉的情况 ——
 # 握手全绿、端口也谈成了，数据就是不到。
@@ -96,12 +118,16 @@ MISMUX = "--mismux" in sys.argv
 HIDE_AUDIO_SDP = "--hide-audio-sdp" in sys.argv
 if ORAIMO:
     VIDEO = load("oraimo_video.rtp")
+elif DASHCAM:
+    VIDEO = load("dashcam_video.rtp")
 else:
     VIDEO = load("video_noidr.rtp" if NO_IDR else
                  ("video265.rtp" if USE_H265 else "video.rtp"))
-if USE_H265 or ORAIMO:
-    # Oraimo 的音频没抓进这份文件；SDP 里照旧声明，客户端会 SETUP
-    # 然后一个包都收不到 —— 正好是真机上的样子。
+if USE_H265 or ORAIMO or DASHCAM:
+    # 两台真机在这里的情形并不相同，只是都没有音频包可发：
+    # Oraimo 的音频没抓进那份文件，但 SDP 里照旧声明，客户端会 SETUP 然后
+    # 一个包都收不到 —— 正好是真机上的样子。记录仪是真的只有视频一条轨，
+    # SDP 里连 m=audio 都没有。
     AUDIO = []
 elif USE_PCMA:
     AUDIO = load("audio_pcma.rtp")
@@ -144,6 +170,26 @@ def sdp_full():
                 "a=rtpmap:97 PCMA/16000/1\r\n"
                 "a=control:audio/track1\r\n"
                 "a=recvonly\r\n")
+    if DASHCAM:
+        # 抓包里那台记录仪的 SDP，原样照抄。要点：只有一条视频轨，
+        # media control 是单段相对路径 track1，profile-level-id=640033
+        # 是 High 5.1，b=AS:2000。参数集在流里每个 IDR 前还会重发一遍。
+        return ("v=0\r\n"
+                "o=- 1773205241250621 1 IN IP4 0.0.0.0\r\n"
+                "s=Nvt RTSP, streamed by the LIVE555 Media Server\r\n"
+                "i=00000000\r\n"
+                "t=0 0\r\n"
+                "a=tool:LIVE555 Streaming Media v2013.07.03\r\n"
+                "a=type:broadcast\r\n"
+                "a=control:*\r\n"
+                "a=range:npt=0-\r\n"
+                "m=video 0 RTP/AVP 96\r\n"
+                "c=IN IP4 0.0.0.0\r\n"
+                "b=AS:2000\r\n"
+                "a=rtpmap:96 H264/90000\r\n"
+                "a=fmtp:96 packetization-mode=1;profile-level-id=640033;"
+                "sprop-parameter-sets=Z2QAM6wVFKDUPabgICAoAAAfQAAHUwAg,aO48sA==\r\n"
+                "a=control:track1\r\n")
     head = ("v=0\r\n"
             "o=- 0 0 IN IP4 127.0.0.1\r\n"
             "s=Test Stream\r\n"
@@ -213,6 +259,16 @@ class Client(threading.Thread):
         self.streaming = False
         self.lock = threading.Lock()
 
+    @property
+    def session_header(self):
+        """SETUP 应答里 Session 头的值。
+
+        记录仪真机不带 timeout（LIVE555 就是这样，客户端得自己按默认 60 秒
+        算保活间隔）。别的场景照旧带上 —— 有 timeout 时客户端按它算，
+        这两条路都要有人走过。
+        """
+        return self.session if DASHCAM else f"{self.session};timeout=60"
+
     def send_raw(self, data):
         with self.lock:
             try:
@@ -225,6 +281,20 @@ class Client(threading.Thread):
                     self.conn.sendall(data)
             except OSError:
                 self.streaming = False
+
+    def check_dashcam_base(self, method, uri, cseq):
+        """记录仪模式下校验 Request-URI 是按 Content-Base 拼的。
+
+        返回 False 表示已经回了错误，调用方要直接 return。
+
+        这是 --dashcam 唯一的判据。真机就是这么挑的：拼错基址的 SETUP
+        它回 404。这里照做，不然客户端拼错了照样能播，场景等于白测。
+        """
+        if DASHCAM_PATH in uri:
+            return True
+        log(f"{method} 用错基址：{uri}（应含 {DASHCAM_PATH}）→ 404")
+        self.reply(cseq, "404 Stream Not Found")
+        return False
 
     def reply(self, cseq, status="200 OK", headers=None, body=""):
         text = f"RTSP/1.0 {status}\r\nCSeq: {cseq}\r\n"
@@ -284,12 +354,26 @@ class Client(threading.Thread):
             self.reply(cseq, headers={
                 "Public": "OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN, GET_PARAMETER"})
         elif method == "DESCRIBE":
-            self.reply(cseq, headers={"Content-Type": "application/sdp"}, body=sdp())
+            hdrs = {"Content-Type": "application/sdp"}
+            if DASHCAM and not NO_CONTENT_BASE:
+                # 这一行就是整个场景的题眼。路径和请求 URL 不同，端口也没有。
+                hdrs = {"Content-Base": DASHCAM_BASE, **hdrs}
+                log(f"DESCRIBE: Content-Base={DASHCAM_BASE}（与请求 URL {uri} 不同）")
+            elif DASHCAM:
+                log("DESCRIBE: 对照组，故意不发 Content-Base")
+            self.reply(cseq, headers=hdrs, body=sdp())
         elif method == "SETUP":
             transport = headers.get("transport", "")
+            if DASHCAM and not self.check_dashcam_base(method, uri, cseq):
+                return
             # Oraimo 的 control 是 video/track0 / audio/track1 这种两段相对路径，
             # 不是 trackID=N。两种都要认出来。
-            is_audio = "trackID=1" in uri or "track1" in uri
+            #
+            # 记录仪必须排除在这个判断之外：它唯一的**视频**轨 control 就叫
+            # track1。判成音频的后果在交织模式下看不出来（视频落到默认通道 0，
+            # 正好是客户端要的），UDP 模式下却是视频一个包都不发 ——
+            # port_of 里没有 trackID=0 的条目。
+            is_audio = (not DASHCAM) and ("trackID=1" in uri or "track1" in uri)
             track = "trackID=1" if is_audio else "trackID=0"
             wants_udp = "interleaved" not in transport and "client_port" in transport
             if (UDP_MODE or UDP_BLACKHOLE) and wants_udp:
@@ -300,7 +384,7 @@ class Client(threading.Thread):
                 # 照抓包原样回：只把 client_port 抄回来，
                 # 既不给 server_port 也不给 source。
                 self.reply(cseq, headers={
-                    "Session": f"{self.session};timeout=60",
+                    "Session": self.session_header,
                     "Transport": f"RTP/AVP;unicast;client_port={port}-{port + 1}"})
                 return
             if UDP_MODE:
@@ -318,13 +402,13 @@ class Client(threading.Thread):
                 # interleaved。客户端必须判为不支持，而不是当成成功。
                 log(f"SETUP {track}: 回默认 UDP Transport")
                 self.reply(cseq, headers={
-                    "Session": f"{self.session};timeout=60",
+                    "Session": self.session_header,
                     "Transport": "RTP/AVP;unicast;client_port=6970-6971"
                                  ";server_port=6970-6971"})
                 return
             if NO_TRANSPORT:
                 log(f"SETUP {track}: 不带 Transport 头")
-                self.reply(cseq, headers={"Session": f"{self.session};timeout=60"})
+                self.reply(cseq, headers={"Session": self.session_header})
                 self.channels[track] = int(m.group(1))
                 return
             if SAME_CHANNEL:
@@ -337,16 +421,20 @@ class Client(threading.Thread):
             self.channels[track] = assigned
             log(f"SETUP {track}: client asked {m.group(1)}, assigned {assigned}")
             self.reply(cseq, headers={
-                "Session": f"{self.session};timeout=60",
+                "Session": self.session_header,
                 "Transport": f"RTP/AVP/TCP;unicast;interleaved={assigned}-{assigned+1}"})
         elif method == "PLAY":
+            if DASHCAM and not self.check_dashcam_base(method, uri, cseq):
+                return
             hdrs = {"Session": self.session}
             if SEND_RTPINFO:
                 # 各轨的首包时间戳，客户端靠这个对齐音视频。
                 parts = []
                 if VIDEO:
                     vts = struct.unpack(">I", VIDEO[0][4:8])[0]
-                    parts.append(f"url={uri}trackID=0;seq=1;rtptime={vts}")
+                    # 记录仪的轨名就是 control 的值，不是 trackID=N。
+                    vtrack = "track1" if DASHCAM else "trackID=0"
+                    parts.append(f"url={uri}{vtrack};seq=1;rtptime={vts}")
                 if AUDIO:
                     ats = struct.unpack(">I", AUDIO[0][4:8])[0]
                     parts.append(f"url={uri}trackID=1;seq=1;rtptime={ats}")

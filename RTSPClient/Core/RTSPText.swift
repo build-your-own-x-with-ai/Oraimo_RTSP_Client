@@ -13,6 +13,9 @@ nonisolated extension StringProtocol {
 }
 
 nonisolated extension String {
+    /// 空串当缺失看。头字段存在但值为空，和没有这个头是一回事。
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+
     /// 去掉两端成对的双引号，Digest 参数和 fmtp 值都可能带引号。
     var unquoted: String {
         let t = trimmed

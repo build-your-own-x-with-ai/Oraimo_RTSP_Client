@@ -57,6 +57,13 @@ nonisolated final class RTSPSession: @unchecked Sendable {
     let events: (Event) -> Void
     var authenticator: RTSPAuthenticator?
 
+    /// DESCRIBE 应答定下的基址，SDP 里的相对 control 都按它解析。
+    /// 应答到手之前等于请求 URL —— OPTIONS/DESCRIBE 发的就是它。
+    var baseURI: String
+    /// 聚合控制的 URI，PLAY / keep-alive / TEARDOWN 用这个。
+    /// 会话级 `a=control:` 给了绝对地址就用它，否则就是基址。
+    var aggregateURI: String
+
     var sessionID: String?
     var sessionTimeout = 60
     var stage: Stage = .connecting
@@ -114,6 +121,8 @@ nonisolated final class RTSPSession: @unchecked Sendable {
     init(url: RTSPURL, transport: TransportMode = .udp,
          events: @escaping (Event) -> Void) {
         self.url = url
+        self.baseURI = url.requestURI
+        self.aggregateURI = url.requestURI
         self.transportMode = transport
         self.events = events
         self.connection = RTSPConnection(host: url.host, port: url.port, usesTLS: url.usesTLS)
@@ -156,7 +165,7 @@ nonisolated final class RTSPSession: @unchecked Sendable {
             self.closeUDP()
             // 尽力发一次 TEARDOWN，成不成都要关连接。
             if let sessionID = self.sessionID {
-                var request = RTSPRequest(method: .teardown, uri: self.url.requestURI)
+                var request = RTSPRequest(method: .teardown, uri: self.aggregateURI)
                 request.set("Session", sessionID)
                 self.authorize(&request)
                 self.connection.send(request, timeout: 2) { _ in }

@@ -60,6 +60,7 @@ nonisolated extension RTSPSession {
         do {
             let sdp = try SDPSession.parse(response.body)
             info.sessionName = sdp.sessionName
+            adoptBaseURI(from: response, sdp: sdp)
 
             guard let video = sdp.video, let depacketizer = VideoDepacketizer(media: video) else {
                 finish(with: .noSupportedMedia)
@@ -89,6 +90,26 @@ nonisolated extension RTSPSession {
         } catch {
             finish(with: .sdpParseFailed(error.localizedDescription))
         }
+    }
+
+    /// 定下基址和聚合控制 URI。必须在任何 SETUP 之前跑。
+    ///
+    /// RFC 2326 的优先级：Content-Base > Content-Location > 请求 URL。
+    /// 那台记录仪（LIVE555）就靠这一步才能过 SETUP —— 它用 `/xxx.mov` 收
+    /// DESCRIBE，Content-Base 给的却是 `rtsp://192.168.1.254/00000000/`。
+    /// Oraimo 两个头都不发，于是落回请求 URL，行为和以前一模一样。
+    private func adoptBaseURI(from response: RTSPResponse, sdp: SDPSession) {
+        // 相对的 Content-Base 见过，但绝对的才有意义：拿它当基址是为了换掉
+        // 请求 URL 的路径，相对值给不了这个。不合格就当没这个头。
+        let declared = [response.contentBase, response.contentLocation]
+            .compactMap(\.self)
+            .first { $0.isAbsoluteRTSP }
+        baseURI = declared ?? url.requestURI
+
+        // 会话级 a=control 是绝对地址时它就是聚合控制的目标，
+        // 否则（`*` 或没有）聚合控制就指基址本身。
+        let sessionControl = sdp.control ?? "*"
+        aggregateURI = RTSPURL.resolveControl(sessionControl, base: baseURI)
     }
 
     // MARK: - SETUP
@@ -123,7 +144,7 @@ nonisolated extension RTSPSession {
     }
 
     private func sendSetup(control: String, channel: Int) {
-        let uri = url.appendingControl(control)
+        let uri = RTSPURL.resolveControl(control, base: baseURI)
         var request = RTSPRequest(method: .setup, uri: uri)
         request.set("Transport", transportHeader(channel: channel))
         if let sessionID { request.set("Session", sessionID) }
@@ -232,7 +253,7 @@ nonisolated extension RTSPSession {
             finish(with: .sessionMissing)
             return
         }
-        var request = RTSPRequest(method: .play, uri: url.requestURI)
+        var request = RTSPRequest(method: .play, uri: aggregateURI)
         request.set("Session", sessionID)
         request.set("Range", "npt=0.000-")
         authorize(&request)

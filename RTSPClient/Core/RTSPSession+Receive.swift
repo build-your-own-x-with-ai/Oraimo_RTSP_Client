@@ -146,7 +146,7 @@ nonisolated extension RTSPSession {
             guard let self, !self.isStopped, let sessionID = self.sessionID else { return }
             // 优先 GET_PARAMETER，设备不支持就退回 OPTIONS。
             let method: RTSPMethod = self.supportsGetParameter ? .getParameter : .options
-            var request = RTSPRequest(method: method, uri: self.url.requestURI)
+            var request = RTSPRequest(method: method, uri: self.aggregateURI)
             request.set("Session", sessionID)
             self.authorize(&request)
             self.connection.send(request, timeout: 15) { [weak self] result in
