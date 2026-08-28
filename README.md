@@ -36,6 +36,37 @@ open RTSPClient.xcodeproj
 
 摄像机要认证的话会自己弹窗问,填过一次就记住了。
 
+## 设备
+
+两台真机验过。地址栏右边那个菜单里各有一项,点一下就填上。
+
+| | Oraimo 摄像机 | 行车记录仪 |
+|---|---|---|
+| 地址 | `rtsp://192.168.0.1/livestream/1/` | `rtsp://192.168.1.254/xxx.mov` |
+| 服务器 | 自研 | LIVE555 v2013.07.03 |
+| Content-Base | 不发 | 发,路径和请求 URL 不同、且不带端口 |
+| media control | `video/track0` | `track1` |
+| SETUP 应答 | 无 `server_port`/`source` | 都有 |
+| Session | 带 `timeout` | 不带 |
+| 编码 | H.264 Baseline 3.0 | H.264 High 5.1 |
+| 音频 | PCMA/16000(不播) | 无音频轨 |
+| B 帧 | 无(I×4 + P×87) | 无(I×6 + P×80) |
+| 到达抖动跨度 | 93.8ms | 23.9ms |
+
+**客户端不按型号分支。** 收到什么头就按什么处理,认不出的设备照样能播。
+`RTSPClient/Devices/` 一台一个文件,存的是出厂地址和抓包里量到的特征 ——
+菜单省得手敲,特征让改握手时知道会碰到什么。每条特征都能在
+`Captures/<设备>/` 的抓包里找到出处。
+
+这两台各逼出过一个真问题:
+
+- **Oraimo** —— SETUP 应答不给 `server_port` 和 `source`,收包的 UDP socket
+  就不能 `connect`,谁发来都得收。以前 `connect` 了,于是「握手全绿、一帧没有」。
+- **记录仪** —— 用 `/xxx.mov` 收 DESCRIBE,`Content-Base` 却是
+  `rtsp://192.168.1.254/00000000/`。SDP 里 control 是相对的 `track1`,
+  按请求 URL 拼会得到 `/xxx.mov/track1`,SETUP 直接 404。
+  基址必须按 RFC 2326 走 Content-Base → Content-Location → 请求 URL。
+
 ## 代码结构
 
 ```
@@ -44,6 +75,7 @@ RTSPClient/
 ├── Media/     RTP 解包与组帧：H.264 / H.265、时间线、丢包统计
 ├── Player/    对上层的门面：RTSPPlayer、渲染器、视频层
 ├── Storage/   播放历史（UserDefaults）与密码（钥匙串）
+├── Devices/   实测过的设备档案：出厂地址 + 抓包里量到的握手特征
 └── Views/     SwiftUI 界面：地址栏、历史列表、统计浮层
 ```
 
@@ -90,26 +122,42 @@ Tests/docs.sh       # 校验文档里的 Mermaid 图
 
 ### 抓包
 
-`Oraimo.pcap` 是 VLC 连那台真实摄像机时录的完整网络抓包,排查「连上了但
-没画面」时用的。它是传输协商那套逻辑的依据 —— 摄像机只认
-`RTP/AVP;unicast;client_port=...`,SETUP 里给交织请求换不来一个字节。
+VLC 连真机时录的完整网络抓包,一台一个目录。测试服务器回放的 RTP 就是从
+这里抽出来的,所以每个数字都能追到出处。
 
-`Tests/Fixtures/oraimo_video.rtp` 就是从这份 pcap 里抽出来的视频 RTP 流,
-换成测试服务器回放用的格式(4 字节大端长度 + 包体)。逐包比对过,480 个
-包的 seq、时间戳、载荷全等。
+| 抓包 | fixture | 内容 |
+|---|---|---|
+| `Captures/Oraimo/Oraimo.pcap` | `oraimo_video.rtp` | UDP,480 包 / 91 帧 / 3.6 秒 |
+| `Captures/Dashcam/RTSP.pcapng` | `dashcam_video.rtp` | UDP,366 包 / 86 帧 / 2.8 秒 |
 
-两者的差别只在于 pcap 还留着 RTSP 握手和 SDP,fixture 只有 RTP。所以传输层
-和信令层的疑问要翻 pcap,解包和渲染的疑问用 fixture 就够。
+pcap 比 fixture 多的是 RTSP 握手和 SDP。传输层、信令层的疑问翻 pcap,
+解包和渲染的疑问用 fixture 就够。
 
 ```sh
 # tshark 在 Wireshark.app 里,/usr/bin/tshark 已经没有了
-"/Applications/Wireshark.app/Contents/MacOS/tshark" -r Oraimo.pcap -Y rtsp
+TS="/Applications/Wireshark.app/Contents/MacOS/tshark"
+"$TS" -r Captures/Oraimo/Oraimo.pcap -Y rtsp            # 只看信令
+"$TS" -r Captures/Dashcam/RTSP.pcapng -q -z follow,tcp,ascii,0   # 完整握手原文
 ```
 
-内容:UDP 传输,480 个 RTP 包 / 91 帧 / 3.6 秒。SDP 里
+Oraimo 那份逐包比对过,480 个包的 seq、时间戳、载荷和 fixture 全等。SDP 里
 `profile-level-id=42001e`,码流内 SPS 一致,都是 Baseline —— 逐片解出
 I×4 + P×87,没有 B 帧,RTP 时间戳零回退。所以这条流不乱序,预缓冲实际是在
 吸收到达抖动:去掉时钟漂移后收齐时刻跨度 93.8ms,最大包间隔 127.4ms。
 
-其余 fixture 是 ffmpeg 生成的,采集脚本在 `Tests/Fixtures/Capture/`。
+记录仪那份是 366 个包,序号 29942..30307 连续无缺口,逐片解出 I×6 + P×80,
+同样没有 B 帧。参数集在每个 IDR 前重发一遍(SPS×6 / PPS×6)。
+
+从抓包里抽 RTP 用这个脚本,以后再加设备也是它:
+
+```sh
+cd Tests/Fixtures
+python3 Capture/extract_rtp.py ../../Captures/Dashcam/RTSP.pcapng \
+        dashcam_video.rtp "rtp && ip.src==192.168.1.254"
+```
+
+过滤器必须带方向。客户端也会往同一个端口发几个空包(NAT 打洞),混进来会
+被当成畸形 RTP。
+
+其余 fixture 是 ffmpeg 生成的,采集脚本也在 `Tests/Fixtures/Capture/`。
 

@@ -18,8 +18,8 @@
 
 ```sh
 Tests/build.sh      # 先编，五个驱动都出到 Tests/.build/
-Tests/unit.sh       # 单元测试，期望 187/187
-Tests/matrix.sh     # 22 个会话层场景，一张表
+Tests/unit.sh       # 单元测试，期望 217/217
+Tests/matrix.sh     # 26 个会话层场景，一张表
 Tests/player.sh     # 3 个播放器层场景，三条恢复路径
 Tests/latency.sh    # 延迟 A/B，和改动前的 250ms 预缓冲对照
 Tests/docs.sh       # 文档里的 Mermaid 图能不能渲染（不用先 build.sh）
@@ -32,12 +32,12 @@ Tests/docs.sh       # 文档里的 Mermaid 图能不能渲染（不用先 build.
 | 路径 | 是什么 |
 | --- | --- |
 | `Server/server.py` | 最小 RTSP 服务器，回放抓包。20 多个开关模拟各种固件行为 |
-| `Unit/` | 单元测试：SDP、解包、时间轴、URL、历史记录 |
+| `Unit/` | 单元测试：SDP、解包、时间轴、URL 与基址、历史记录、设备档案 |
 | `SessionDriver/` | 会话层驱动，直接开 `RTSPSession` |
 | `PlayerDriver/` | 播放器层驱动，走 `RTSPPlayer`，能覆盖换传输和退避重连 |
 | `LatencyDriver/` | 延迟测量，不需要服务器 |
 | `Fixtures/` | 抓包、SDP、逐帧尺寸的 ground truth |
-| `Fixtures/Capture/` | 重新采集抓包的脚本（需要 ffmpeg） |
+| `Fixtures/Capture/` | 合成抓包的脚本（需要 ffmpeg），和从真机抓包里抽 RTP 的 `extract_rtp.py`（需要 tshark） |
 | `MermaidCheck/` | 校验文档里的 Mermaid 图，用 VS Code 自带那份解析器 |
 
 `Tests/.build/` 是产物（二进制、服务器日志、对照实验的补丁副本），已被
@@ -46,10 +46,41 @@ Tests/docs.sh       # 文档里的 Mermaid 图能不能渲染（不用先 build.
 ## 驱动必须从 Fixtures 里跑
 
 抓包是按相对路径读的。跑错目录不会报错，只会静默少掉一批用例：
-单元测试从别处跑是 `123/129 通过`，从 `Fixtures/` 跑是 `187/187` ——
-58 个用例读不到 `video.sdp` 就直接 return 了，看起来还是「全部通过」。
+单元测试从别处跑是 `151/157 通过`，从 `Fixtures/` 跑是 `217/217` ——
+60 个用例读不到 `video.sdp` 就直接 return 了，看起来还是「全部通过」。
 所以用上面那几个脚本，别直接敲 `.build/` 里的二进制。
 （`server.py` 例外，它按 `__file__` 定位，从哪跑都行。）
+
+## 两台真机的差异都用开关模拟
+
+服务器默认是 Oraimo 那台的行为。记录仪那台加 `--dashcam`：
+
+| 开关 | 模拟的固件行为 |
+| --- | --- |
+| `--oraimo` | 回放 Oraimo 抓包；SETUP 应答不给 `server_port` / `source` |
+| `--dashcam` | 回放记录仪抓包；DESCRIBE 带 `Content-Base`，control 是 `track1`，Session 不带 `timeout`，无音频轨 |
+| `--no-content-base` | 只跟 `--dashcam` 一起用，把那个头去掉当对照 |
+
+`--dashcam` 下三个 URI 是**故意各不相同**的，这是它的全部意义：
+
+```
+请求 URL       rtsp://127.0.0.1:8554/livestream/1/
+Content-Base   rtsp://127.0.0.1/00000000/          ← 路径不同，而且没有端口
+media control  track1                              ← 相对值
+SETUP 该发的    rtsp://127.0.0.1/00000000/track1
+```
+
+按请求 URL 去拼会得到 `/livestream/1/track1`，服务器直接回 404。
+（真机那台是用 `rtsp://192.168.1.254:554/xxx.mov` 收 DESCRIBE 的，
+路径和端口都不一样 —— 测试台只复刻「三者互不相同」这个结构，不复刻字面值。）
+
+基址里没有端口是安全的，因为连接在 DESCRIBE 之前就建好了，基址只当字符串
+拼接用，客户端不会拿它重新拨号。真要有人写出重新拨号的回归，症状是连
+`127.0.0.1:554` 失败 —— 测试台听的是 8554。
+
+**判据是服务器校验 Request-URI。** `check_dashcam_base()` 对 SETUP 和 PLAY
+都查一遍，路径里没有 `/00000000/` 就回 `404 Stream Not Found`。真机就是
+这么挑的。不这么做，客户端拼错基址照样能播，这个场景等于白测。
 
 ## 为什么还留着音频抓包
 
@@ -61,12 +92,17 @@ App 已经完全不放音频了，但 `audio.rtp` / `audio_pcma.rtp` 必须留�
 都实测过（同一段字节流，只把保护关掉作对照）：
 
 - **PCMA**：裸样本字节被当成 H.264 NAL 解，凭空造出假帧。
-  126 帧 / 6 关键帧 / 0 乱序 / 0 丢包 → **151 / 12 / 22 / 586**。
+  126 帧 / 6 关键帧 / 0 乱序 → **151 / 12 / 22**，另外丢包从 0 变成三位数。
 - **AAC**：负载头两字节是 `00 10`，NAL type 0 是 unspecified，解包器直接丢，
-  所以帧数不变；但音频的 RTP 序号会污染丢包统计，
-  丢包 0 → **823**，界面上会把一条完好的流显示成「丢包 823」。
+  所以帧数不变（127/6/0）；但音频的 RTP 序号会污染丢包统计，丢包从 0 变成
+  三位数，界面上会把一条完好的流显示成「丢包 800 多」。
 
-矩阵里 `mismux_*` 三行压的是保护生效，`ctl_*` 两行是把保护关掉的对照。
+**丢包那一列不要当定值核对。** 两轨交错的时机每次跑都不一样，实测
+562 / 586 / 853 / 859 都出现过。判据是「从 0 变成三位数」。
+帧数、关键帧、乱序这三列是稳的，回归看它们。
+
+矩阵里 `mismux_*` 三行压的是保护生效，`ctl_aac` / `ctl_pcma` 是把保护
+关掉的对照。
 
 ## 对照组预期就是坏的
 
@@ -75,8 +111,14 @@ App 已经完全不放音频了，但 `audio.rtp` / `audio_pcma.rtp` 必须留�
 说明矩阵测不出它本该测出的缺陷。
 
 `AAC` 那一行尤其要看丢包列。它的帧数和通过的行一模一样（127/6/0），
-只有丢包从 0 变成 823。表里没有丢包这一列的时候，这个对照组看起来
+只有丢包从 0 变成三位数。表里没有丢包这一列的时候，这个对照组看起来
 和通过完全一样，等于白测。
+
+`ctl_nobase` 是记录仪那台的对照：`--dashcam --no-content-base` 让服务器
+不发 `Content-Base`，别的一个字节不改。客户端于是只能按请求 URL 拼
+`control`，拼出 `/livestream/1/track1`，服务器回 `404 Stream Not Found`。
+**这一行能出画就是问题** —— 说明 `dashcam` 那两行不是靠基址解析过的，
+碰巧对上而已。
 
 延迟测量同理：`latency_old` 是把预缓冲常量从 80ms 改回 250ms 编出来的，
 补丁打在 `.build/patched/` 的副本上，绝不碰仓库源文件。`build.sh` 打完补丁
@@ -91,12 +133,15 @@ App 已经完全不放音频了，但 `audio.rtp` / `audio_pcma.rtp` 必须留�
 | --- | --- | --- |
 | `chunk` | 5 帧 | 服务器每小块 sleep 0.5ms，1 字节一块约 2000 B/s。这一行已经单独给了 `--long`（9 秒），仍然只传得完这么多 —— 不是回归 |
 | `h265` | 乱序 48 | 该流有 72 个 B 帧，解码顺序里 PTS 本就不单调 |
-| `noidr` | 2 帧 / 0 关键帧 | 视频里没有 IDR，本来就出不了画 |
+| `noidr` | 0～2 帧 / 0 关键帧 | 视频里没有 IDR，本来就出不了画。帧数取决于窗口结束时凑齐了几个非 IDR 分片，实测 0 和 2 都出现过 —— 判据是**关键帧=0** |
 | `nodata` | 0 帧 / 0 字节 | 握手全成功，PLAY 之后一个字节都不发 |
 | `udpreply` | 报错 | 服务器既不给 UDP 也不给交织，客户端必须判为不支持 |
 | `drop` | 报错 | 中途断流，会话层看到连接关闭就结束 —— 重连在播放器层 |
+| `dashcam` | 86 帧 / 6 关键帧 | 记录仪抓包的真实回放，848x480。帧数就是抓包里的 marker 数 |
+| `dashcam_tcp` | 86 帧 / 6 关键帧 | 同一段字节流走交织，读数必须和 UDP 那行**逐字节一致**（431719 字节） |
+| `ctl_nobase` | 0 帧 / `404` | 对照组，见上一节。出画就是回归 |
 
-`Tests/unit.sh` 期望 187/187。长窗口（`--long`，9 秒）下 H.264 是
+`Tests/unit.sh` 期望 217/217。长窗口（`--long`，9 秒）下 H.264 是
 150 帧 / 6 关键帧 / 0 乱序，H.265 是 100 / 4 / 48 且 `format_changes=1`
 （`video265.sdp` 没有 sprop-vps/sps/pps，参数集只在流内，首帧建 format 是对的）。
 
@@ -159,7 +204,35 @@ cd Tests/Fixtures && python3 Capture/capture_pcma.py # PCMA
 和解包出的 AVCC 长度逐帧比对。
 
 `video_noidr.rtp` 是 `video.rtp` 把 IDR 的 NAL 类型从 5 改写成 1 得到的，
-`oraimo_video.rtp` 是那台真实摄像机的抓包 —— 这两个没有采集脚本。
+没有采集脚本。
+
+另外两个来自真机抓包，用 `Capture/extract_rtp.py` 从 `Captures/` 里抽：
+
+| 抓包 | 抓包文件 | 抽出的 fixture |
+| --- | --- | --- |
+| Oraimo 摄像机 | `Captures/Oraimo/Oraimo.pcap` | `oraimo_video.rtp` |
+| 记录仪 | `Captures/Dashcam/RTSP.pcapng` | `dashcam_video.rtp`（366 包，PT 96） |
+
+第三个参数是 tshark 显示过滤器（默认 `rtp`）：
+
+```sh
+cd Tests/Fixtures && python3 Capture/extract_rtp.py \
+    ../../Captures/Dashcam/RTSP.pcapng dashcam_video.rtp \
+    'rtp && ip.src==192.168.1.254'
+```
+
+这条命令复现出的 `dashcam_video.rtp` 和仓库里那份**逐字节一致**
+（366 包，负载类型 96，序号 29942..30307），可以直接核对。
+
+**过滤要带方向。** 抓包里两个方向都有包，客户端会往同一个端口发几个空包
+打 NAT 洞，混进来会被当成畸形 RTP。所以过滤器要写 `ip.src==<设备IP>`。
+抽错方向的症状是负载类型那一栏出现多个值 —— 脚本跑完会打出来，当场就能看见。
+
+用的是读取过滤 `-Y` 而不是抓包过滤 `-f`：RTP 要靠 RTSP 的 SETUP 才认得出来，
+得跑完整解析。脚本自己找 tshark（`PATH` 上没有就退到 Wireshark.app 里那个，
+Wireshark 4.x 不再装 `/usr/bin/tshark` 软链接）。
+
+**按抓包顺序输出，不排序。** 乱序本身就是要测的东西，排一遍就没了。
 
 **ffmpeg 8.1 的 `-rtsp_flags listen` 不能当服务器用**，它仍然向外拨号，
 直接报 Connection refused。这就是服务器得自己写的原因。
@@ -215,4 +288,11 @@ Mermaid 解析，信息不丢。
   它可以无窗口跑：macOS 上 `AVSampleBufferDisplayLayer` 不需要窗口。
 - 驱动给 `StreamHistoryStore` 注入临时 UserDefaults suite，跑完
   `removePersistentDomain` —— 别污染用户真实的播放历史。
+- **`build.sh` 不会自动收新目录。** Xcode 那边靠
+  `fileSystemSynchronizedGroups` 自动扫，这里是一个目录一条显式 glob。
+  加了 `RTSPClient/Devices/` 之后编译照样过，但 `RTSPPlayer.defaultAddress`
+  从那里取值，漏掉就是链接期才报错。App 编得过不代表驱动编得过。
+- 服务器按轨名认音频（`trackID=1` / `track1`）。记录仪那台的**视频**轨
+  正好也叫 `track1`，所以那个判断必须先排除 `--dashcam`。撞上了在交织模式
+  下看不出来（两轨走同一条 TCP），UDP 模式下是零帧。
 

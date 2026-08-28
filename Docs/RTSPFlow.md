@@ -82,9 +82,10 @@ sequenceDiagram
         Note over P: needsCredentials = true<br/>不进退避重连，等用户输密码
     end
 
+    Note over S: adoptBaseURI()<br/>基址 = Content-Base 或 Content-Location<br/>两个都没有才用请求 URL
     Note over S: consumeSDP()<br/>取 video 轨的 control / rtpmap /<br/>fmtp 里的 SPS·PPS(VPS)<br/>audioPayloadType 只用来过滤
 
-    S->>CAM: SETUP 视频轨的 control URL<br/>Transport 请求 UDP 端口对
+    S->>CAM: SETUP · control 按基址解析出的 URL<br/>Transport 请求 UDP 端口对
     CAM-->>S: 200 OK · Session 与 timeout · Transport 实际取值
     Note over S: applyTransport()<br/>看有没有 interleaved 参数，<br/>没有就按 UDP 处理（RFC 2326）
 
@@ -109,7 +110,7 @@ sequenceDiagram
 ```
 
 图里的头部写成了叙述，因为 Mermaid 会把 `;` 当语句分隔符。实际收发的原文是
-这样（`SETUP` 的 URL 取自 SDP 里 video 轨的 `a=control:`）：
+这样（`SETUP` 的 URL 由 SDP 里 video 轨的 `a=control:` 按基址解析而来）：
 
 ```http
 SETUP rtsp://192.168.0.1/livestream/1/trackID=0 RTSP/1.0
@@ -122,6 +123,46 @@ Transport: RTP/AVP;unicast;client_port=5000-5001
 RTSP/1.0 200 OK
 RTP-Info: url=rtsp://192.168.0.1/livestream/1/trackID=0;seq=8123;rtptime=3092385
 ```
+
+### control 要按基址解析，不是按请求 URL
+
+SDP 里的 `a=control:` 多半是相对值。它相对的是 **DESCRIBE 应答定下的基址**，
+按 RFC 2326 取 `Content-Base` → `Content-Location` → 请求 URL，先到先用。
+
+不少设备三者一致，于是「按请求 URL 拼」看起来一直是对的。那台行车记录仪
+（LIVE555）就不是 —— 抓包里 VLC 和它的对话是这样的：
+
+```http
+DESCRIBE rtsp://192.168.1.254:554/xxx.mov RTSP/1.0
+
+RTSP/1.0 200 OK
+Content-Base: rtsp://192.168.1.254/00000000/
+
+a=control:*
+a=control:track1
+
+SETUP rtsp://192.168.1.254/00000000/track1 RTSP/1.0
+PLAY rtsp://192.168.1.254/00000000/ RTSP/1.0
+```
+
+路径从 `/xxx.mov` 换成了 `/00000000/`，端口也不见了。按请求 URL 拼会发出
+`rtsp://192.168.1.254:554/xxx.mov/track1`，真机回 404。
+
+几条实现上的取舍：
+
+- **拼接是「基址后面接一段」，不是 RFC 3986 那套「替换最后一段」。**
+  RTSP 服务器（含 LIVE555 自己）实际就是这么拼的，按 3986 严格解析反而对不上。
+- **只认绝对的 `Content-Base`。** 拿它当基址的目的就是换掉请求 URL 的路径，
+  相对值给不了这个。不合格的值当没有这个头。
+- **基址只是字符串，客户端不照它重新拨号。** 连接在 DESCRIBE 之前就建好了。
+  记录仪给的基址不带端口，要是照它拨号会去连 554 而不是原来的端口。
+- **会话级 `a=control:` 是绝对地址时，它就是 PLAY / 保活 / TEARDOWN 的
+  目标**；是 `*` 或没有，这些就发给基址本身。
+
+对照代码：`RTSPURL.resolveControl(_:base:)`、
+`RTSPSession+Handshake.adoptBaseURI(from:sdp:)`。
+`Tests/matrix.sh` 里 `dashcam` 是正例，`ctl_nobase` 是把 `Content-Base`
+扣掉的对照 —— **它报 404 才说明这条路真的在被验**。
 
 ## 二、传输协商：先 UDP，再退 TCP
 
@@ -380,6 +421,8 @@ Keychain 那条用 `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`，
 | TCP 收发与 `$` 分帧 | `Core/RTSPConnection.swift` |
 | 无连接 UDP 收包 | `Core/RTPUDPTransport.swift` |
 | 握手四步与传输协商 | `Core/RTSPSession+Handshake.swift` |
+| 基址与 control 解析 | `Core/RTSPURL.swift`、`Core/RTSPMessage.swift` |
+| 设备档案（地址预设 + 抓包特征） | `Devices/DeviceProfile.swift` 及同目录各设备 |
 | 收包、保活、统计 | `Core/RTSPSession+Receive.swift` |
 | 会话状态与事件 | `Core/RTSPSession.swift` |
 | Digest 认证 | `Core/RTSPAuth.swift` |

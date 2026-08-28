@@ -30,8 +30,8 @@ final class RTSPPlayer {
         }
     }
 
-    /// 默认地址：常见的设备出厂地址。
-    static let defaultAddress = "rtsp://192.168.0.1/livestream/1/"
+    /// 默认地址：默认设备档案的出厂地址。见 `DeviceProfile.default`。
+    static let defaultAddress = DeviceProfile.default.address
 
     private(set) var state: State = .idle
     private(set) var mediaInfo: RTSPSession.MediaInfo?

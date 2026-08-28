@@ -82,8 +82,15 @@ struct AddressBar: View {
                 Button("全部记录…", systemImage: "list.bullet", action: onShowHistory)
             }
             Divider()
-            Button("恢复默认地址", systemImage: "arrow.counterclockwise") {
-                address = RTSPPlayer.defaultAddress
+            // 实测过的设备各自的出厂地址。客户端不按型号分支，这里纯粹是
+            // 省得手敲 —— 档案和特征在 RTSPClient/Devices/。
+            ForEach(DeviceProfile.all) { device in
+                Button {
+                    address = device.address
+                } label: {
+                    Label(device.name, systemImage: "video")
+                }
+                .help(device.summary)
             }
         } label: {
             Image(systemName: "clock.arrow.circlepath")

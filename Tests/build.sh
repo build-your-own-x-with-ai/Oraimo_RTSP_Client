@@ -22,6 +22,8 @@ fi
 CORE=("$SRC"/Core/*.swift)
 MEDIA=("$SRC"/Media/*.swift)
 STORAGE=("$SRC"/Storage/*.swift)
+# 设备档案。RTSPPlayer.defaultAddress 从这里取，所以播放器驱动必须带上。
+DEVICES=("$SRC"/Devices/*.swift)
 # VideoLayerView 是 SwiftUI 的 NSViewRepresentable，命令行驱动用不到。
 # 会话层和延迟驱动只要 MediaRenderer（为了 isKeyframeSample 这个扩展）；
 # 带上 RTSPPlayer 会连累 Storage 一起要，没必要。
@@ -32,7 +34,7 @@ FLAGS=(-swift-version 5 -sdk "$(xcrun --show-sdk-path --sdk macosx)")
 
 echo "--- 单元测试 unit"
 swiftc "${FLAGS[@]}" -o "$OUT/unit" "$HERE/Unit/main.swift" \
-    "${CORE[@]}" "${MEDIA[@]}" "${STORAGE[@]}"
+    "${CORE[@]}" "${MEDIA[@]}" "${STORAGE[@]}" "${DEVICES[@]}"
 
 echo "--- 会话层 session"
 swiftc "${FLAGS[@]}" -o "$OUT/session" "$HERE/SessionDriver/main.swift" \
@@ -40,7 +42,7 @@ swiftc "${FLAGS[@]}" -o "$OUT/session" "$HERE/SessionDriver/main.swift" \
 
 echo "--- 播放器层 player"
 swiftc "${FLAGS[@]}" -o "$OUT/player" "$HERE/PlayerDriver/main.swift" \
-    "${CORE[@]}" "${MEDIA[@]}" "${PLAYER[@]}" "${STORAGE[@]}"
+    "${CORE[@]}" "${MEDIA[@]}" "${PLAYER[@]}" "${STORAGE[@]}" "${DEVICES[@]}"
 
 echo "--- 延迟测量 latency（现行 preroll）"
 swiftc "${FLAGS[@]}" -o "$OUT/latency" "$HERE/LatencyDriver/main.swift" \

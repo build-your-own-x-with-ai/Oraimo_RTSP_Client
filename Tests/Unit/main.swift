@@ -81,6 +81,47 @@ func testURL() {
     equal("control 为 * 时用基地址", base?.appendingControl("*"),
           "rtsp://192.168.0.1/livestream/1/")
 
+    // 按 Content-Base 解析。下面几个字串全部照抄
+    // Captures/Dashcam/RTSP.pcapng：请求 URL 带 :554，Content-Base 不带端口，
+    // 路径也完全不同。VLC 发出的 SETUP / PLAY 就是这里期望的两个值。
+    let camBase = "rtsp://192.168.1.254/00000000/"
+    equal("按 Content-Base 拼 control",
+          RTSPURL.resolveControl("track1", base: camBase),
+          "rtsp://192.168.1.254/00000000/track1")
+    equal("聚合控制指基址本身",
+          RTSPURL.resolveControl("*", base: camBase), camBase)
+    equal("control 为空也落回基址",
+          RTSPURL.resolveControl("", base: camBase), camBase)
+    // 反例：不按基址拼会得到什么。真机对这个 URI 回 404，
+    // 所以这一条锁的是「两者确实不同」—— 相等就说明基址没起作用。
+    let wrong = RTSPURL(string: "rtsp://192.168.1.254:554/xxx.mov")
+    equal("不按基址拼会拼错", wrong?.appendingControl("track1"),
+          "rtsp://192.168.1.254:554/xxx.mov/track1")
+    check("基址解析与按请求 URL 拼的结果不同",
+          RTSPURL.resolveControl("track1", base: camBase)
+              != wrong?.appendingControl("track1"))
+
+    // 尾斜杠有无都只留一个分隔符；control 自带前导 / 时不能拼出双斜杠。
+    equal("基址无尾斜杠时补一个",
+          RTSPURL.resolveControl("track1", base: "rtsp://1.2.3.4/live"),
+          "rtsp://1.2.3.4/live/track1")
+    equal("control 带前导斜杠不出双斜杠",
+          RTSPURL.resolveControl("/track1", base: camBase),
+          "rtsp://192.168.1.254/00000000/track1")
+    equal("Oraimo 的两段相对 control",
+          RTSPURL.resolveControl("video/track0",
+                                 base: "rtsp://192.168.0.1/livestream/1/"),
+          "rtsp://192.168.0.1/livestream/1/video/track0")
+    equal("绝对 control 无视基址",
+          RTSPURL.resolveControl("rtsp://9.9.9.9/t", base: camBase),
+          "rtsp://9.9.9.9/t")
+    equal("rtsps 也算绝对",
+          RTSPURL.resolveControl("rtsps://9.9.9.9/t", base: camBase),
+          "rtsps://9.9.9.9/t")
+    equal("大写 RTSP:// 也算绝对",
+          RTSPURL.resolveControl("RTSP://9.9.9.9/t", base: camBase),
+          "RTSP://9.9.9.9/t")
+
     check("空串被拒绝", RTSPURL(string: "   ") == nil)
     check("非法端口被拒绝", RTSPURL(string: "rtsp://1.2.3.4:99999/x") == nil)
     check("http scheme 被拒绝", RTSPURL(string: "http://1.2.3.4/x") == nil)
@@ -166,6 +207,34 @@ func testMessage() {
         equal("入站请求 CSeq", cseq, 7)
     } else {
         check("入站请求解析", false)
+    }
+
+    // Content-Base / Content-Location。头部照抄 Captures/Dashcam/RTSP.pcapng
+    // 里 LIVE555 的 DESCRIBE 应答 —— 注意它不带 Session，也不带 timeout。
+    let described = "RTSP/1.0 200 OK\r\nCSeq: 3\r\n"
+        + "Date: Wed, Mar 11 2026 05:00:41 GMT\r\n"
+        + "Content-Base: rtsp://192.168.1.254/00000000/\r\n"
+        + "Content-Type: application/sdp\r\nContent-Length: 0\r\n\r\n"
+    if let p = RTSPHead.parse(Data(described.utf8)),
+       case .response(let r) = p.message {
+        equal("Content-Base", r.contentBase, "rtsp://192.168.1.254/00000000/")
+        check("没有 Content-Location 时为 nil", r.contentLocation == nil)
+        check("没有 Session 时为 nil", r.sessionID == nil)
+        check("没有 timeout 时为 nil", r.sessionTimeout == nil)
+    } else {
+        check("DESCRIBE 应答解析", false)
+    }
+
+    // 值为空的头和没有这个头必须一样 —— 否则基址会被设成空串，
+    // 之后每个 Request-URI 都以 /track1 开头。
+    let blank = "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Base:  \r\n"
+        + "Content-Location: rtsp://5.6.7.8/alt/\r\n\r\n"
+    if let p = RTSPHead.parse(Data(blank.utf8)),
+       case .response(let r) = p.message {
+        check("空的 Content-Base 当缺失", r.contentBase == nil)
+        equal("退到 Content-Location", r.contentLocation, "rtsp://5.6.7.8/alt/")
+    } else {
+        check("空头响应解析", false)
     }
 
     check("头部不全时返回 nil",
@@ -835,6 +904,39 @@ func testHEVCDepacketize() {
           "\(keyframeSizes)")
 }
 
+// MARK: - 设备档案
+
+func testDevices() {
+    print("\n[设备档案]")
+    let all = DeviceProfile.all
+    check("有档案", !all.isEmpty)
+    equal("id 不重复", Set(all.map(\.id)).count, all.count)
+    equal("名字不重复", Set(all.map(\.name)).count, all.count)
+    check("默认档案在列表里", all.contains(DeviceProfile.default))
+
+    for d in all {
+        // 地址解析不了的话，界面上点一下菜单就是直接失败。
+        check("\(d.id) 地址可解析", RTSPURL(string: d.address) != nil)
+        check("\(d.id) 有说明", !d.summary.isEmpty)
+        check("\(d.id) 有特征", !d.traits.isEmpty)
+    }
+
+    // id 就是抓包目录名。改目录不改档案（或反过来）会让注释里的出处失效，
+    // 这条负责当场发现。抓包不在时跳过 —— 和别的 fixture 用例一个规矩。
+    let captures = "../../Captures"
+    if FileManager.default.fileExists(atPath: captures) {
+        for d in all {
+            check("\(d.id) 有对应抓包目录",
+                  FileManager.default.fileExists(atPath: "\(captures)/\(d.id)"))
+        }
+    } else {
+        print("  --   跳过抓包目录核对（没找到 \(captures)）")
+    }
+
+    // 两台设备的默认地址必须真的不同，否则菜单里两项点下来一样。
+    equal("地址不重复", Set(all.map(\.address)).count, all.count)
+}
+
 // MARK: - 入口
 
 print("=== RTSP Client 测试 ===")
@@ -851,6 +953,7 @@ testStartGate()
 testSEIRecoveryPoint()
 testByteBuffer()
 testHistory()
+testDevices()
 
 print("\n=== \(checks - failures)/\(checks) 通过 ===")
 if failures > 0 {
